@@ -62,8 +62,7 @@ def query():
 
     results = collection.query(
         query_texts=[query_text],
-        n_results=1,
-        embeddings=embedding_fn([query_text])
+        n_results=1
     )
 
     if not results['documents'][0]:
@@ -73,6 +72,7 @@ def query():
         "result": results['documents'][0][0],
         "metadata": results['metadatas'][0][0]
     })
+
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
