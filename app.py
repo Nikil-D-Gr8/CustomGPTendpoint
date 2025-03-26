@@ -29,19 +29,27 @@ def home():
 def store_chunks():
     data = request.json
     text = data.get("text")
-    tags = data.get("tags", {})  # optional
+    tags = data.get("tags")  # Don't default to {}
 
     if not text:
         return jsonify({"error": "Text is required"}), 400
 
     chunks = chunk_text(text)
     ids = [str(uuid.uuid4()) for _ in chunks]
+    embeddings = embedding_fn(chunks)
+
+    if tags and isinstance(tags, dict) and tags:
+        # ✅ Tags provided
+        metadatas = [tags] * len(chunks)
+    else:
+        # ✅ Provide dummy metadata (Chroma requires non-empty)
+        metadatas = [{"source": "default"}] * len(chunks)
 
     collection.add(
         documents=chunks,
         ids=ids,
-        metadatas=[tags] * len(chunks),
-        embeddings=embedding_fn(chunks)
+        metadatas=metadatas,
+        embeddings=embeddings
     )
 
     return jsonify({"message": "Chunks stored", "chunk_count": len(chunks)})
