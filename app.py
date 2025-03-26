@@ -2,77 +2,122 @@ from flask import Flask, request, jsonify
 import chromadb
 from chromadb.utils import embedding_functions
 import uuid
+import requests
+import os
+import PyPDF2
 
 app = Flask(__name__)
 
-# Initialize ChromaDB in-memory
+# Initialize Chroma client
 chroma_client = chromadb.Client()
-collection = chroma_client.create_collection(name="text_chunks")
-
-# Default embedding function (OpenAI-like)
 embedding_fn = embedding_functions.DefaultEmbeddingFunction()
 
-# Helper: Chunk text into 20-word pieces
-def chunk_text(text, chunk_size=20):
+# ========== Utility Functions ==========
+
+def download_file(file_id, destination_path):
+    url = f'https://drive.google.com/uc?id={file_id}&export=download'
+    response = requests.get(url, stream=True)
+    if response.status_code == 200:
+        with open(destination_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=1024):
+                if chunk:
+                    f.write(chunk)
+        return True
+    return False
+
+def extract_text_from_pdf(pdf_path):
+    try:
+        with open(pdf_path, 'rb') as pdf_file:
+            pdf_reader = PyPDF2.PdfReader(pdf_file)
+            text = ""
+            for page in pdf_reader.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text + "\n"
+        return text
+    except Exception as e:
+        print(f"PDF parse error: {e}")
+        return ""
+
+def chunk_text(text, chunk_size=100):
     words = text.split()
     return [
         ' '.join(words[i:i + chunk_size])
         for i in range(0, len(words), chunk_size)
     ]
 
-@app.route("/home")
-def home():
-    return "<h1>Welcome Home</h1>"
-
+# ========== API Routes ==========
 
 @app.route("/store", methods=["POST"])
 def store_chunks():
     data = request.json
-    text = data.get("text")
-    tags = data.get("tags")  # Don't default to {}
+    file_id = data.get("file_id")
+    collection_name = data.get("collection")
 
-    if not text:
-        return jsonify({"error": "Text is required"}), 400
+    if not file_id or not collection_name:
+        return jsonify({"error": "file_id and collection are required"}), 400
 
-    chunks = chunk_text(text)
+    pdf_path = "temp.pdf"
+
+    if not download_file(file_id, pdf_path):
+        return jsonify({"error": "Failed to download file"}), 500
+
+    text = extract_text_from_pdf(pdf_path)
+    os.remove(pdf_path)
+
+    if not text.strip():
+        return jsonify({"error": "No text found in PDF"}), 400
+
+    chunks = chunk_text(text, chunk_size=100)
     ids = [str(uuid.uuid4()) for _ in chunks]
-    embeddings = embedding_fn(chunks)
+    metadatas = [{"source": f"gdrive:{file_id}"}] * len(chunks)
 
-    if tags and isinstance(tags, dict) and tags:
-        # ✅ Tags provided
-        metadatas = [tags] * len(chunks)
-    else:
-        # ✅ Provide dummy metadata (Chroma requires non-empty)
-        metadatas = [{"source": "default"}] * len(chunks)
-
-    collection.add(
-        documents=chunks,
-        ids=ids,
-        metadatas=metadatas,
-        embeddings=embeddings
-    )
-
-    return jsonify({"message": "Chunks stored", "chunk_count": len(chunks)})
+    try:
+        collection = chroma_client.get_or_create_collection(
+            name=collection_name,
+            embedding_function=embedding_fn
+        )
+        collection.add(
+            documents=chunks,
+            ids=ids,
+            metadatas=metadatas
+        )
+        return jsonify({
+            "message": f"{len(chunks)} chunks stored in '{collection_name}'"
+        })
+    except Exception as e:
+        return jsonify({"error": f"ChromaDB error: {str(e)}"}), 500
 
 @app.route("/query", methods=["GET"])
 def query():
     query_text = request.args.get("query")
-    if not query_text:
-        return jsonify({"error": "Query parameter is required"}), 400
+    collection_name = request.args.get("collection")
 
-    results = collection.query(
-        query_texts=[query_text],
-        n_results=1
-    )
+    if not query_text or not collection_name:
+        return jsonify({"error": "Both 'query' and 'collection' are required"}), 400
 
-    if not results['documents'][0]:
-        return jsonify({"result": None, "message": "No match found"}), 200
+    try:
+        collection = chroma_client.get_collection(
+            name=collection_name,
+            embedding_function=embedding_fn
+        )
+        results = collection.query(
+            query_texts=[query_text],
+            n_results=1
+        )
+        if not results['documents'][0]:
+            return jsonify({"result": None, "message": "No match found"}), 200
 
-    return jsonify({
-        "result": results['documents'][0][0],
-        "metadata": results['metadatas'][0][0]
-    })
+        return jsonify({
+            "result": results['documents'][0][0],
+            "metadata": results['metadatas'][0][0]
+        })
+    except Exception as e:
+        return jsonify({"error": f"ChromaDB error: {str(e)}"}), 500
 
+@app.route("/home")
+def home():
+    return "<h1>Welcome to RAG GPT API (PDF + GDrive)</h1>"
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
