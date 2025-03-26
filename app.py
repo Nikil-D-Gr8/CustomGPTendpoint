@@ -4,7 +4,7 @@ from chromadb.utils import embedding_functions
 import uuid
 import requests
 import os
-import PyPDF2
+from pdfminer.high_level import extract_text
 
 app = Flask(__name__)
 
@@ -27,16 +27,9 @@ def download_file(file_id, destination_path):
 
 def extract_text_from_pdf(pdf_path):
     try:
-        with open(pdf_path, 'rb') as pdf_file:
-            pdf_reader = PyPDF2.PdfReader(pdf_file)
-            text = ""
-            for page in pdf_reader.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text += page_text + "\n"
-        return text
+        return extract_text(pdf_path)
     except Exception as e:
-        print(f"PDF parse error: {e}")
+        print(f"[PDF ERROR] {e}")
         return ""
 
 def chunk_text(text, chunk_size=100):
